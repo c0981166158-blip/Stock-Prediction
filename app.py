@@ -25,8 +25,11 @@ import quant
 
 # ------------------------------------------------------------------ 設定
 DEFAULT_STOCKS = ["2330", "2317", "2454"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
-FALLBACK_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"]   # gemini-1.5 已下架時自動改用
+# 2026-10 時點：gemini-1.5 全系列、gemini-2.0 已下架；gemini-2.5-pro/flash 於 2026-10-16 下架。
+# 目前可用：gemini-3.1-pro-preview（最強）、gemini-3-flash-preview（快/便宜）、gemini-3.1-flash-lite（穩定版）。
+# 之後再被下架也不用改程式：可設 GEMINI_MODEL，或讓程式自動探索帳號可用的模型。
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+FALLBACK_MODELS = ["gemini-3-flash-preview", "gemini-3.1-flash-lite"]
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 MIN_RR = 2.0
 
@@ -213,20 +216,46 @@ def call_gemini(api_key: str, prompt: str) -> dict:
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
-    last = None
-    for m in [GEMINI_MODEL] + [x for x in FALLBACK_MODELS if x != GEMINI_MODEL]:
-        try:
-            resp = client.models.generate_content(
-                model=m, contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json", temperature=0.2))
-            data = json.loads(resp.text)
-            data["_model"] = m
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type="application/json", temperature=0.2)
+
+    def attempt(models, tried):
+        last = None
+        for m in models:
+            if m in tried:
+                continue
+            tried.append(m)
+            try:
+                resp = client.models.generate_content(model=m, contents=prompt, config=config)
+                data = json.loads(resp.text)
+                data["_model"] = m
+                return data, None
+            except Exception as e:   # 404 下架 / 無權限 / JSON 解析失敗 → 換下一個
+                last = f"{m}: {e}"
+        return None, last
+
+    tried = []
+    data, err = attempt([GEMINI_MODEL] + FALLBACK_MODELS, tried)
+    if data:
+        return data
+    # 全部失敗（例如又有模型下架）：向 API 查詢這把金鑰目前可用的模型，pro 優先、版本新的優先
+    try:
+        bad = ("image", "tts", "audio", "live", "embedding", "robotics", "lite", "veo", "imagen", "learnlm")
+        found = []
+        for m in client.models.list():
+            name = (m.name or "").replace("models/", "")
+            acts = getattr(m, "supported_actions", None) or ["generateContent"]
+            if name.startswith("gemini-") and "generateContent" in acts and not any(b in name for b in bad):
+                found.append(name)
+        found.sort(key=lambda n: ("pro" in n, n), reverse=True)
+        data, err2 = attempt(found, tried)
+        if data:
             return data
-        except Exception as e:
-            last = e
-    raise RuntimeError(f"Gemini 呼叫失敗：{last}")
+        err = err2 or err
+    except Exception as e:
+        err = f"{err}；列出可用模型也失敗：{e}"
+    raise RuntimeError(f"Gemini 呼叫失敗（已嘗試 {tried}）：{err}")
 
 
 # ------------------------------------------------------------------ 風控關卡
