@@ -6,6 +6,7 @@
 4. kelly_fraction  凱利部位
 5. 戰績追蹤        每次「買進」建議寫入 SQLite，之後用真實股價結算，驗證預測準不準
 """
+import re
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +25,27 @@ def round_tick(p: float) -> float:
     tick = (0.01 if p < 10 else 0.05 if p < 50 else 0.1 if p < 100
             else 0.5 if p < 500 else 1 if p < 1000 else 5)
     return round(round(p / tick) * tick, 2)
+
+
+_FULLWIDTH = str.maketrans("０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ",
+                           "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def normalize_code(raw: str, names_rev: dict | None = None) -> str:
+    """
+    統一股票代碼：去空白、全形轉半角、移除 .TW/.TWO/TPE: 前後綴、中文名稱轉代碼、
+    不足 4 碼補 0（50 → 0050）。格式不符丟 ValueError。例：' ２３３０.TW ' → '2330'，'台積電' → '2330'
+    """
+    s = str(raw).strip().translate(_FULLWIDTH).upper()
+    if names_rev and s in names_rev:
+        return names_rev[s]
+    s = re.sub(r"^(TPE:|TWSE:|TWO:)", "", s)
+    s = re.sub(r"\.(TWO|TW)$", "", s)
+    if s.isdigit() and len(s) < 4:
+        s = s.zfill(4)
+    if not re.fullmatch(r"\d{4,6}[A-Z]?", s):
+        raise ValueError(f"無法辨識的股票代碼：{raw!r}（請輸入如 2330、0050、00878、006208、00937B）")
+    return s
 
 
 def add_indicators(hist: pd.DataFrame) -> pd.DataFrame:
