@@ -1,5 +1,8 @@
 yfinance
 pandas
+numpy
 requests
 streamlit
 google-genai
+beautifulsoup4
+googlenewsdecoder
