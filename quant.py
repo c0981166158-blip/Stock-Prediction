@@ -63,18 +63,120 @@ def add_indicators(hist: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+MAX_STOP_PCT = 8.0       # 停損離建倉點最大允許 %（超過 → 觀望）
+MAX_STOP_ATR = 4.0       # 停損離建倉點最大允許 ATR 倍數
+
+
 def propose_levels(d: pd.DataFrame) -> dict:
-    """機械式基準價位：拉回 MA20 附近分批買、停損放波段低點下方、目標 2.5R / 4R。"""
+    """
+    機械式基準價位（AI 價位不合邏輯時的備用，也是給 AI 的參考）：
+      建倉點：回測 5 日線（現價已在 5 日線下就用現價）
+      加碼點：月線(MA20)離建倉點夠遠 → 「回測月線」；否則 → 「突破壓力」（20 日高點上方）
+      停損：近 10 日低點 / 建倉−1ATR 取低再減 0.5ATR，並限制在 8% 與 4ATR 之內
+      目標：2.5R / 4R
+    """
     x = d.iloc[-1]
-    atr = float(x["atr"])
-    hi = min(float(x["Close"]), float(x["ma20"]) * 1.01)
-    lo = hi - 0.75 * atr
-    stop = min(float(d["Low"].tail(10).min()), lo) - 0.5 * atr
-    mid = (hi + lo) / 2
-    risk = mid - stop
-    return {k: round_tick(v) for k, v in {
-        "entry_low": lo, "entry_high": hi, "stop_loss": stop,
-        "target1": mid + 2.5 * risk, "target2": mid + 4 * risk}.items()}
+    price, atr = float(x["Close"]), float(x["atr"])
+    ma5, ma20 = float(x["ma5"]), float(x["ma20"])
+    entry = min(price, ma5)
+    swing = float(d["Low"].tail(10).min())
+    stop = min(swing, entry - atr) - 0.5 * atr
+    stop = max(stop, entry * (1 - MAX_STOP_PCT / 100 * 0.9), entry - (MAX_STOP_ATR - 0.5) * atr)
+    if ma20 < entry - 0.5 * atr:
+        add, add_type = ma20, "回測月線"
+    else:
+        add, add_type = max(float(d["High"].tail(20).max()) * 1.003, price + 0.5 * atr), "突破壓力"
+    risk = entry - stop
+    out = {k: round_tick(v) for k, v in {
+        "entry_price": entry, "add_price": add, "stop_loss": stop,
+        "target1": entry + 2.5 * risk, "target2": entry + 4 * risk}.items()}
+    out["add_type"] = add_type
+    out["entry_basis"] = "回測5日線" if entry < price else "現價附近"
+    return out
+
+
+# ------------------------------------------------------------------ 籌碼特徵
+def _streak(series) -> int:
+    """連買(+)/連賣(−)天數：由最新一天往回數同方向的連續天數，持平為 0。"""
+    vals = [float(v) for v in pd.Series(series).dropna()]
+    if not vals or vals[-1] == 0:
+        return 0
+    sign = 1 if vals[-1] > 0 else -1
+    n = 0
+    for v in reversed(vals):
+        if v * sign > 0:
+            n += 1
+        else:
+            break
+    return n * sign
+
+
+def chips_features(inst, margin, vol5_lots=None, ret5_pct=None) -> dict:
+    """
+    把三大法人與融資資料整理成可直接判讀的變數，並依固定規則給出「籌碼訊號」。
+    inst:   index=日期、欄位 外資/投信/自營商（單位：張，買超為正）
+    margin: index=日期、欄位 融資餘額/融券餘額（單位：張）
+    """
+    out = {}
+    foreign5 = trust5 = inst5 = None
+    if inst is not None and len(inst):
+        inst = inst.sort_index().copy()
+        for c in ("外資", "投信", "自營商"):
+            if c not in inst:
+                inst[c] = 0.0
+        inst["三大法人"] = inst[["外資", "投信", "自營商"]].sum(axis=1)
+        t5 = inst.tail(5).sum()
+        foreign5, trust5, inst5 = int(t5["外資"]), int(t5["投信"]), int(t5["三大法人"])
+        out.update({
+            "資料日期": str(inst.index[-1]),
+            "外資連買(+)連賣(−)天數": _streak(inst["外資"]),
+            "投信連買(+)連賣(−)天數": _streak(inst["投信"]),
+            "外資最新一日(張)": int(inst["外資"].iloc[-1]),
+            "投信最新一日(張)": int(inst["投信"].iloc[-1]),
+            "自營商最新一日(張)": int(inst["自營商"].iloc[-1]),
+            "外資近5日合計(張)": foreign5, "投信近5日合計(張)": trust5, "三大法人近5日合計(張)": inst5,
+        })
+        if vol5_lots:
+            out["三大法人近5日買超占成交量%"] = round(inst5 / (vol5_lots * 5) * 100, 1)
+    pct5 = None
+    if margin is not None and len(margin):
+        m = margin.sort_index()
+        mb, sb = m["融資餘額"].astype(float), m["融券餘額"].astype(float)
+        out["融資餘額(張)"] = int(mb.iloc[-1])
+        out["融券餘額(張)"] = int(sb.iloc[-1])
+        if mb.iloc[-1] > 0:
+            out["券資比%"] = round(float(sb.iloc[-1] / mb.iloc[-1] * 100), 1)
+        if len(mb) > 5:
+            chg = mb.iloc[-1] - mb.iloc[-6]
+            out["融資近5日增減(張)"] = int(chg)
+            if mb.iloc[-6] > 0:
+                pct5 = float(chg / mb.iloc[-6] * 100)
+                out["融資近5日增減%"] = round(pct5, 1)
+    if inst5 is None:
+        out["籌碼訊號"] = "資料不足"
+        out["籌碼分數"] = 0
+        return out
+    chase = pct5 is not None and pct5 > 3
+    if inst5 > 0 and not chase:
+        label, score = "🟢 法人吃貨、籌碼沉澱", 2 if (pct5 is not None and pct5 < 0) else 1
+    elif inst5 > 0 and chase:
+        label, score = "🟡 法人與散戶同買（籌碼偏熱）", 0
+    elif inst5 < 0 and chase:
+        label, score = "🔴 散戶追高、法人倒貨（籌碼凌亂）", -2
+    elif inst5 < 0:
+        label, score = "🟡 法人賣、融資減（籌碼換手，觀察落底）", -1
+    else:
+        label, score = "⚪ 中性", 0
+    notes = []
+    if trust5 is not None and out.get("投信連買(+)連賣(−)天數", 0) >= 3:
+        notes.append("投信連買認養中")
+    if out.get("外資連買(+)連賣(−)天數", 0) >= 5:
+        notes.append("外資連買 5 日以上")
+    if chase and ret5_pct is not None and ret5_pct > 8:
+        notes.append("股價急漲且融資暴增，追價風險高")
+    out["籌碼訊號"] = label + ("（" + "、".join(notes) + "）" if notes else "")
+    out["籌碼分數"] = score
+    return out
 
 
 # ------------------------------------------------------------------ 回測
