@@ -1,16 +1,20 @@
-MAX_STOP_PCT = 0.08  # 設為 0.08 代表最大停損 8%（可依需求調整）
+# ==========================================
+# 系統核心設定變數（確保 app.py 能正常讀取）
+# ==========================================
+MAX_STOP_PCT = 0.08  # 最大停損比例 (8%)
+
 """
 量化引擎（不依賴網路與 LLM，可單獨測試）
-1. add_indicators  技術指標
-2. backtest        固定規則的歷史回測（含手續費+證交稅、次日開盤進場、同日停損優先）
-3. simulate_plan   依「這一檔現在的波動」做蒙地卡羅，算出 先達標 vs 先停損 的機率與期望值
-4. kelly_fraction  凱利部位
-5. 戰績追蹤        每次「買進」建議寫入 SQLite，之後用真實股價結算，驗證預測準不準
+1. add_indicators 技術指標
+2. backtest 固定規則的歷史回測
+3. simulate_plan 依「這一檔現在的波動」模擬買賣點
+4. kelly_fraction 凱利部位
+5. 戰績追蹤 每次「買進」建議寫入資料庫
 """
+
 import re
 import sqlite3
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
