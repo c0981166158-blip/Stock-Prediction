@@ -42,7 +42,7 @@ UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/1
 
 # 風控過濾門檻
 MIN_RR = 2.0                 # 預期盈虧比下限（以建倉點計算，最保守）
-MAX_STOP_PCT = quant.MAX_STOP_PCT   # 停損離建倉點最大 %
+MAX_STOP_PCT = 0.08   # 直接定義 8% 停損，不依賴 quant 模組
 MAX_STOP_ATR = quant.MAX_STOP_ATR   # 停損離建倉點最大 ATR 倍數
 OVERHEAT_EXT20 = 12.0        # 收盤高於月線 12% 視為過熱
 OVERHEAT_RET5 = 10.0         # 5 日漲幅 10% 視為過熱
