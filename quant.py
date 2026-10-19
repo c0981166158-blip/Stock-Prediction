@@ -68,7 +68,7 @@ def add_indicators(hist: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-MAX_STOP_PCT = 8.0       # 停損離建倉點最大允許 %（超過 → 觀望）
+MAX_STOP_PCT = 0.08   # 直接在這裡定義 8% 停損，不依賴 quant 模組
 MAX_STOP_ATR = 4.0       # 停損離建倉點最大允許 ATR 倍數
 
 
