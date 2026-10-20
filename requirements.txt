@@ -6,3 +6,4 @@ streamlit
 google-genai
 beautifulsoup4
 googlenewsdecoder
+plotly
